@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ToxGuard Модератор</title>
+    <style>
+        
+        body {
+            font-family: Arial, sans-serif;
+            margin: 40px;
+            background-color: #f4f4f4;
+        }
+        .container {
+            max-width: 750px;
+            margin: auto;
+            background: #fff;
+            padding: 25px;
+            border-radius: 8px;
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.1);
+            
+        }
+        textarea {
+            width: 100%;
+            height: 150px;
+            padding: 10px;
+            margin-bottom: 15px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.3s;
+        }
+        button:hover:not(:disabled) {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
+        #results {
+            margin-top: 25px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background-color: #e9ecef;
+        }
+        .toxic {
+            color: white;
+            background-color: #dc3545;
+            padding: 5px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        .normal {
+            color: white;
+            background-color: #28a745;
+            padding: 5px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        #explanation_output {
+            margin-top: 15px;
+            border: 1px dashed #007bff;
+            padding: 15px;
+            border-radius: 4px;
+            line-height: 1.8;
+        }
+        .dark-mode {
+            background-color: #121212;
+            color: #e0e0e0;
+        }
+        .dark-mode .container {
+            background: #1f1f1f;
+            box-shadow: 0 0 15px rgba(255, 255, 255, 0.1);
+        }
+        .dark-mode textarea {
+            background-color: #2c2c2c;
+            border-color: #555;
+            color: #e0e0e0;
+        }
+        .dark-mode button {
+            background-color: #0088cc;
+        }
+        .dark-mode #results {
+            background-color: #2c2c2c;
+            border-color: #555;
+        }
+    </style>
+</head>
+<body>
+    <body>
+    <div class="container">
+        <h2>🤖 ToxGuard Модератор: Проверка текста</h2>
+        <button id="theme_toggle" onclick="toggleTheme()" 
+            style="float: right; padding: 5px 10px; margin-top: -5px; font-size: 14px;">
+            Переключить на тёмную
+        </button>
+        <label for="text_input">Введите текст для проверки:</label>
+        <textarea id="text_input" placeholder="Введите сообщение..."></textarea>
+
+        <div style="margin-bottom: 20px;">
+            <label for="threshold_input">Порог срабатывания токсичности (0.0 - 1.0):</label>
+            <input type="number" id="threshold_input" min="0.0" max="1.0" step="0.01" value="0.6" style="width: 80px; padding: 5px;">
+        </div>
+        
+        <div id="results">
+            <strong>Результаты:</strong>
+            <p id="status_output">Ожидание ввода...</p>
+
+            <div id="confidence_graphs"></div> 
+
+            <h4 style="margin-top: 20px;">🔎 Объяснение решения:</h4>
+            
+            <select id="explain_class" style="padding: 5px; margin-right: 10px;">
+                <option value="" disabled selected>Сначала проверьте текст</option>
+            </select>
+            <button id="explain_button" onclick="requestExplanation()" disabled>Получить объяснение</button>
+            
+            <div id="explanation_output">
+                Выберите класс для анализа и нажмите кнопку. (Красный = за класс, Синий = против)
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // АДРЕСА API
+        const API_URL = 'http://127.0.0.1:8000/api/moderate';
+        const API_EXPLAIN_URL = 'http://127.0.0.1:8000/api/explain';
+        const ALL_LABELS = ['NORMAL', 'INSULT', 'THREAT', 'OBSCENITY'];
+
+        const debounce = (func, delay) => {
+            let timeoutId;
+            return (...args) => {
+                if (timeoutId) {
+                    clearTimeout(timeoutId);
+                }
+                timeoutId = setTimeout(() => {
+                    func.apply(null, args);
+                }, delay);
+            };
+        };
+
+
+        // ФУНКЦИЯ 1: МОДЕРАЦИЯ И ЗАПОЛНЕНИЕ ГРАФИКОВ
+        async function moderateText() {
+            const textInput = document.getElementById('text_input');
+            const statusOutput = document.getElementById('status_output');
+            const confidenceGraphs = document.getElementById('confidence_graphs');
+            const thresholdInput = document.getElementById('threshold_input');
+
+            const text = textInput.value.trim();
+            const threshold = parseFloat(thresholdInput.value) || 0.6;
+            
+            if (!text) {
+                statusOutput.innerHTML = "Введите текст!";
+                return;
+            }
+
+            statusOutput.innerHTML = "Отправка запроса...";
+            confidenceGraphs.innerHTML = '';
+            document.getElementById('explanation_output').innerHTML = "Выберите класс для анализа и нажмите кнопку.";
+            document.getElementById('explain_button').disabled = true;
+
+            try {
+                // Запрос на /api/moderate
+                const response = await fetch(API_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: text })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Ошибка HTTP: ${response.status}`);
+                }
+
+                const result = await response.json();
+                
+                // --- Добавление опций в выпадающий список для объяснения (XAI) ---
+                const explainClassSelect = document.getElementById('explain_class');
+                explainClassSelect.innerHTML = '';
+                document.getElementById('explain_button').disabled = false;
+                
+                // Сортируем классы по убыванию уверенности
+                const sortedLabels = Object.entries(result.confidence)
+                                         .sort(([, a], [, b]) => b - a)
+                                         .map(([label]) => label);
+
+                sortedLabels.forEach(label => {
+                    const option = document.createElement('option');
+                    option.value = label;
+                    option.textContent = label + ` (${(result.confidence[label] * 100).toFixed(1)}%)`;
+                    explainClassSelect.appendChild(option);
+                });
+
+                // --- Логика порога ---
+                let isToxic = false;
+                for (const label of ALL_LABELS) {
+                    if (label !== 'NORMAL' && result.confidence[label] >= threshold) {
+                        isToxic = true;
+                        break; 
+                    }
+                }
+
+                // --- Вывод статуса ---
+                let toxicityStatus = '';
+                if (isToxic) {
+                    toxicityStatus = `<span class="toxic">❌ ТОКСИЧНОСТЬ ОБНАРУЖЕНА! (Порог: ${threshold})</span>`;
+                } else {
+                    toxicityStatus = `<span class="normal">✅ ТЕКСТ НОРМАЛЬНЫЙ. (Порог: ${threshold})</span>`;
+                }
+                statusOutput.innerHTML = toxicityStatus;
+
+                // --- Создание прогресс-баров ---
+                let graphHTML = '<h4>Уровень уверенности:</h4>';
+                
+                for (const [label, score] of Object.entries(result.confidence)) {
+                    const percentage = (score * 100).toFixed(2);
+                    const color = label === 'NORMAL' ? '#28a745' : '#dc3545'; // Зеленый или Красный
+
+                    graphHTML += `
+                        <div style="margin-bottom: 10px;">
+                            <strong>${label}:</strong> ${percentage}%
+                            <div style="background-color: #ddd; border-radius: 4px; height: 20px; overflow: hidden;">
+                                <div style="width: ${percentage}%; background-color: ${color}; height: 100%; text-align: right; color: white; line-height: 20px;">
+                                    &nbsp;
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }
+                confidenceGraphs.innerHTML = graphHTML;
+
+            } catch (error) {
+                statusOutput.innerHTML = `Критическая ошибка: не удалось подключиться к API. Убедитесь, что сервер Uvicorn запущен.`;
+                confidenceGraphs.innerHTML = `Подробности: ${error.message}`;
+                console.error("API Error:", error);
+            } finally {
+                pass
+            }
+        }
+        
+
+        // ФУНКЦИЯ 2: ЗАПРОС ОБЪЯСНЕНИЯ (XAI)
+        async function requestExplanation() {
+            const text = document.getElementById('text_input').value.trim();
+            const targetClass = document.getElementById('explain_class').value;
+            const explainButton = document.getElementById('explain_button');
+            const explanationOutput = document.getElementById('explanation_output');
+            
+            explainButton.disabled = true;
+            explanationOutput.innerHTML = "Расчет значимости слов (может занять несколько секунд)...";
+
+            try {
+                // Запрос на /api/explain
+                const response = await fetch(API_EXPLAIN_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        text: text, 
+                        target_class: targetClass 
+                    })
+                });
+
+                const result = await response.json();
+                
+                if (result.error) {
+                    explanationOutput.innerHTML = `Ошибка API: ${result.error}`;
+                } else {
+                    displayExplanation(result.explanation);
+                }
+
+            } catch (error) {
+                explanationOutput.innerHTML = `Ошибка подключения к API /explain: ${error.message}`;
+                console.error("Explain API Error:", error);
+            } finally {
+                explainButton.disabled = false;
+            }
+        }
+        
+
+        // ФУНКЦИЯ 3: ОТОБРАЖЕНИЕ ЦВЕТНОГО ТЕКСТА
+        function displayExplanation(scores) {
+            const explanationOutput = document.getElementById('explanation_output');
+            let coloredHtml = '';
+            
+            // Находим максимальный абсолютный вес, чтобы правильно масштабировать цвета
+            const maxAbsScore = Math.max(...scores.map(s => Math.abs(s.score)));
+
+            scores.forEach(item => {
+                const normalizedScore = Math.abs(item.score / maxAbsScore);
+                const alpha = normalizedScore; 
+
+                let color;
+                // Положительный вес (слово ПОДТВЕРЖДАЕТ класс) -> Красный
+                if (item.score > 0) {
+                    color = `rgba(255, 0, 0, ${alpha})`;
+                } 
+                // Отрицательный вес (слово ПРОТИВОДЕЙСТВУЕТ классу) -> Синий
+                else {
+                    color = `rgba(0, 0, 255, ${alpha})`;
+                }
+                
+                // Добавляем токен с фоном (используем <mark> для лучшей семантики, но <span> тоже ОК)
+                coloredHtml += `<span style="background-color: ${color}; padding: 2px 0; border-radius: 2px; margin-right: 3px; display: inline-block;">${item.word}</span> `;
+            });
+
+            explanationOutput.innerHTML = coloredHtml;
+        }
+
+        // --- Логика ТЁМНОЙ ТЕМЫ ---
+        function toggleTheme() {
+            const body = document.body;
+            body.classList.toggle('dark-mode');
+            const isDarkMode = body.classList.contains('dark-mode');
+            
+            // Сохраняем выбор пользователя в браузере
+            localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
+
+            // Обновляем текст кнопки
+            document.getElementById('theme_toggle').textContent = 
+                isDarkMode ? 'Переключить на светлую' : 'Переключить на тёмную';
+        }
+
+        // Загрузка темы при старте страницы
+        document.addEventListener('DOMContentLoaded', () => {
+            const textInput = document.getElementById('text_input');
+            const toggleButton = document.getElementById('theme_toggle');
+
+            // Загрузка сохраненной темы
+            const savedTheme = localStorage.getItem('theme');
+            if (savedTheme === 'dark') {
+                document.body.classList.add('dark-mode');
+                toggleButton.textContent = 'Переключить на светлую';
+            } else {
+                toggleButton.textContent = 'Переключить на тёмную';
+            }
+
+            // Привязка автоматического скорирования (Real-time Scoring)
+            const debouncedModerate = debounce(moderateText, 750); 
+            
+            // Привязываем запуск moderateText к событию ввода (keyup)
+            textInput.addEventListener('keyup', debouncedModerate);
+            
+            // Запускаем скорирование один раз при загрузке, если в поле что-то есть
+            if (textInput.value.trim()) {
+                moderateText();
+            }
+        });
+
+    </script>
+</body>
+</html>
